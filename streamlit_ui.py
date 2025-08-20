@@ -14,7 +14,7 @@ from typing import List
 sys.path.insert(0, '.')
 
 # Import the orchestrator
-from llm_orchestrator import llm_orchestrate_request
+from llm_orchestrator import llm_orchestrate_request, llm_orchestrate_request_streaming
 
 # Page configuration
 st.set_page_config(
@@ -149,6 +149,10 @@ def initialize_session_state():
     # Add LLM parsing mode
     if "use_llm_parsing" not in st.session_state:
         st.session_state.use_llm_parsing = True
+    
+    # Add streaming mode
+    if "use_streaming" not in st.session_state:
+        st.session_state.use_streaming = True
 
 def display_header():
     """Display the main header and description."""
@@ -214,6 +218,13 @@ def display_sidebar():
                                  help="Use AI to intelligently parse ticket details from natural language")
         if llm_parsing != st.session_state.use_llm_parsing:
             st.session_state.use_llm_parsing = llm_parsing
+            st.rerun()
+        
+        # Streaming toggle
+        streaming = st.checkbox("Enable Streaming", value=st.session_state.use_streaming,
+                               help="Show real-time updates as agents process requests")
+        if streaming != st.session_state.use_streaming:
+            st.session_state.use_streaming = streaming
             st.rerun()
         
         # Clear chat button
@@ -301,6 +312,57 @@ def display_chat_history():
     for message in st.session_state.messages:
         display_chat_message(message["role"], message["content"])
 
+async def handle_conversation_context_streaming(user_input: str, stream_callback=None) -> tuple[str, bool]:
+    """Handle conversation context with streaming support."""
+    context = st.session_state.conversation_context
+    
+    # If we're waiting for ticket details, treat this as ticket details
+    if context["waiting_for_ticket_details"]:
+        if stream_callback:
+            stream_callback("🎫 Processing ticket details...")
+        
+        # Use LLM to intelligently parse the user input for ticket details
+        details = await parse_ticket_details_llm_streaming(user_input, context["ticket_details"], stream_callback)
+        
+        # Always update with new details
+        context["ticket_details"].update(details)
+        
+        # Check if we have enough information to create a ticket
+        required_fields = ["short_description", "description", "impact", "urgency"]
+        missing_fields = [field for field in required_fields if field not in context["ticket_details"]]
+        
+        if not missing_fields:
+            # We have all required details, create the ticket
+            context["waiting_for_ticket_details"] = False
+            context["current_agent"] = None
+            
+            if stream_callback:
+                stream_callback("🎫 Creating ticket...")
+            
+            # Show what we're creating
+            ticket_info = context["ticket_details"]
+            summary = f"🎫 Creating ticket with:\n" + \
+                     f"**Short Description:** {ticket_info.get('short_description', 'N/A')}\n" + \
+                     f"**Description:** {ticket_info.get('description', 'N/A')}\n" + \
+                     f"**Impact:** {ticket_info.get('impact', 'N/A')}\n" + \
+                     f"**Urgency:** {ticket_info.get('urgency', 'N/A')}\n\n"
+            
+            # Create the ticket
+            result = create_ticket_with_details(context["ticket_details"])
+            return summary + result, True
+        else:
+            # Still need more details, but be more helpful
+            if len(missing_fields) == 1:
+                field_name = missing_fields[0].replace('_', ' ').title()
+                return f"🎫 Ticket Agent: Almost there! I just need the **{field_name}**.\n" + \
+                       f"Current details: {context['ticket_details']}", True
+            else:
+                return f"🎫 Ticket Agent: I have some details, but still need:\n" + \
+                       "\n".join([f"- {field.replace('_', ' ').title()}" for field in missing_fields]) + \
+                       f"\n\nCurrent details: {context['ticket_details']}", True
+    
+    return user_input, False
+
 async def handle_conversation_context(user_input: str) -> tuple[str, bool]:
     """Handle conversation context and determine if we should continue with current agent."""
     context = st.session_state.conversation_context
@@ -345,6 +407,21 @@ async def handle_conversation_context(user_input: str) -> tuple[str, bool]:
                        f"\n\nCurrent details: {context['ticket_details']}", True
     
     return user_input, False
+
+async def parse_ticket_details_llm_streaming(user_input: str, existing_details: dict = None, stream_callback=None) -> dict:
+    """Use LLM to intelligently parse ticket details from natural language input with streaming."""
+    # Check if LLM parsing is enabled
+    if not st.session_state.use_llm_parsing:
+        return parse_ticket_details_simple(user_input)
+    
+    try:
+        from ticket_details_agent import interpret_ticket_details_streaming
+        return await interpret_ticket_details_streaming(user_input, existing_details, stream_callback)
+    except Exception as e:
+        if st.session_state.debug_mode:
+            st.write(f"🔍 Debug: LLM parsing failed: {e}")
+        # Fallback to simple parsing
+        return parse_ticket_details_simple(user_input)
 
 async def parse_ticket_details_llm(user_input: str, existing_details: dict = None) -> dict:
     """Use LLM to intelligently parse ticket details from natural language input."""
@@ -445,6 +522,31 @@ def create_ticket_with_details(details: dict) -> str:
     except Exception as e:
         return f"❌ Error creating ticket: {str(e)}"
 
+async def get_orchestrator_response_streaming(user_input: str, stream_callback=None) -> str:
+    """Get response from the orchestrator with streaming support."""
+    try:
+        # Check if we're in a conversation context
+        processed_input, is_context_handled = await handle_conversation_context_streaming(user_input, stream_callback)
+        
+        if is_context_handled:
+            return processed_input
+        
+        # Normal orchestrator flow with streaming
+        response = await llm_orchestrate_request_streaming(processed_input, st.session_state.vector_store_ids, ui_mode=True, stream_callback=stream_callback)
+        
+        # Check if this is a ticket creation request
+        if "🎫 Ticket Agent Response:" in response:
+            st.session_state.conversation_context["waiting_for_ticket_details"] = True
+            st.session_state.conversation_context["current_agent"] = "ticket"
+            st.session_state.conversation_context["ticket_details"] = {}
+        
+        return format_message_for_ui(response)
+    except Exception as e:
+        error_msg = f"❌ Error: {str(e)}"
+        if stream_callback:
+            stream_callback(error_msg)
+        return error_msg
+
 async def get_orchestrator_response(user_input: str) -> str:
     """Get response from the orchestrator with conversation context handling."""
     try:
@@ -492,20 +594,42 @@ def main():
         # Display user message
         display_chat_message("user", prompt)
         
-        # Get assistant response
-        with st.spinner("🤖 Analyzing your request..."):
-            # Run the async function
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                response = loop.run_until_complete(get_orchestrator_response(prompt))
-            finally:
-                loop.close()
+        # Get assistant response (with or without streaming)
+        if st.session_state.use_streaming:
+            # Create a placeholder for streaming response
+            response_placeholder = st.empty()
+            full_response = ""
+            
+            # Streaming callback function
+            def stream_callback(chunk):
+                nonlocal full_response
+                full_response += chunk
+                response_placeholder.markdown(full_response)
+            
+            # Get assistant response with streaming
+            with st.spinner("🤖 Analyzing your request..."):
+                # Run the async function with streaming
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    response = loop.run_until_complete(get_orchestrator_response_streaming(prompt, stream_callback))
+                finally:
+                    loop.close()
+        else:
+            # Get assistant response without streaming
+            with st.spinner("🤖 Analyzing your request..."):
+                # Run the async function
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    response = loop.run_until_complete(get_orchestrator_response(prompt))
+                finally:
+                    loop.close()
         
         # Add assistant message to chat history
         st.session_state.messages.append({"role": "assistant", "content": response})
         
-        # Display assistant message
+        # Display final assistant message
         display_chat_message("assistant", response)
         
         # Rerun to update the display

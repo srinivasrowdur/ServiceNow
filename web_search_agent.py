@@ -68,6 +68,41 @@ async def run_web_search(question: str) -> str:
     out = getattr(result, "final_output", None) or getattr(result, "output_text", None) or result
     return out if isinstance(out, str) else json.dumps(out, ensure_ascii=False, indent=2)
 
+async def run_web_search_streaming(question: str, stream_callback=None):
+    """Run a web search with streaming support."""
+    agent = build_web_search_agent()
+    full_prompt = f"{WEB_SEARCH_INSTRUCTIONS}\n\nQuestion: {question}"
+    
+    if stream_callback:
+        # Send initial status
+        stream_callback("🔍 Searching the web...")
+    
+    try:
+        result = await Runner.run(agent, full_prompt)
+        
+        if stream_callback:
+            stream_callback("📝 Processing results...")
+        
+        # Be flexible about result shape
+        out = getattr(result, "final_output", None) or getattr(result, "output_text", None) or result
+        final_result = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False, indent=2)
+        
+        if stream_callback:
+            # Stream the final result in chunks
+            chunk_size = 50
+            for i in range(0, len(final_result), chunk_size):
+                chunk = final_result[i:i + chunk_size]
+                stream_callback(chunk)
+                await asyncio.sleep(0.05)  # Small delay for streaming effect
+        
+        return final_result
+        
+    except Exception as e:
+        error_msg = f"❌ Error during web search: {str(e)}"
+        if stream_callback:
+            stream_callback(error_msg)
+        return error_msg
+
 async def web_search_repl():
     """Interactive REPL for web search agent."""
     print("Web Search Agent (UK) — type 'exit' to quit.")

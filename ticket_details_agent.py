@@ -139,6 +139,96 @@ async def interpret_ticket_details(user_input: str, existing_details: Optional[D
             "urgency": "2"
         }
 
+async def interpret_ticket_details_streaming(user_input: str, existing_details: Optional[Dict[str, Any]] = None, stream_callback=None) -> Dict[str, Any]:
+    """
+    Use LLM to intelligently interpret user input with streaming support.
+    
+    Args:
+        user_input: User's natural language description
+        existing_details: Any existing details to merge with
+        stream_callback: Optional callback for streaming updates
+    
+    Returns:
+        Complete ticket details dictionary
+    """
+    agent = build_ticket_details_agent()
+    
+    # Build context-aware prompt
+    context = ""
+    if existing_details:
+        context = f"\n\nEXISTING DETAILS: {json.dumps(existing_details, indent=2)}\n\nMerge with new information from user input."
+    
+    prompt = f"User Input: {user_input}{context}\n\nExtract and complete ticket details:"
+    
+    if stream_callback:
+        stream_callback("🧠 Analyzing ticket details...")
+    
+    try:
+        result = await Runner.run(agent, prompt)
+        
+        if stream_callback:
+            stream_callback("📝 Processing response...")
+        
+        response = getattr(result, "final_output", None) or getattr(result, "output_text", None) or str(result)
+        
+        # Clean the response to extract JSON
+        response = response.strip()
+        
+        if stream_callback:
+            stream_callback("🔍 Extracting structured data...")
+        
+        # Try to find JSON in the response
+        if "{" in response and "}" in response:
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            json_str = response[start:end]
+            
+            # Parse the JSON
+            parsed_details = json.loads(json_str)
+            
+            # Validate and ensure all required fields
+            required_fields = ["short_description", "description", "impact", "urgency"]
+            for field in required_fields:
+                if field not in parsed_details or not parsed_details[field]:
+                    # Provide defaults for missing fields
+                    if field == "short_description":
+                        parsed_details[field] = user_input[:50] + "..." if len(user_input) > 50 else user_input
+                    elif field == "description":
+                        parsed_details[field] = user_input
+                    elif field == "impact":
+                        parsed_details[field] = "2"  # Default to medium
+                    elif field == "urgency":
+                        parsed_details[field] = "2"  # Default to medium
+            
+            if stream_callback:
+                stream_callback("✅ Ticket details processed successfully!")
+            
+            return parsed_details
+        else:
+            # Fallback if no JSON found
+            if stream_callback:
+                stream_callback("⚠️ Using fallback parsing...")
+            
+            return {
+                "short_description": user_input[:50] + "..." if len(user_input) > 50 else user_input,
+                "description": user_input,
+                "impact": "2",
+                "urgency": "2"
+            }
+            
+    except Exception as e:
+        error_msg = f"❌ Error interpreting ticket details: {e}"
+        if stream_callback:
+            stream_callback(error_msg)
+        print(error_msg)
+        # Fallback parsing
+        return {
+            "short_description": user_input[:50] + "..." if len(user_input) > 50 else user_input,
+            "description": user_input,
+            "impact": "2",
+            "urgency": "2"
+        }
+
 async def test_ticket_details_agent():
     """Test the ticket details agent with various inputs."""
     test_cases = [

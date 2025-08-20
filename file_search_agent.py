@@ -68,6 +68,41 @@ async def run_file_search(question: str, vector_store_ids: List[str]) -> str:
     out = getattr(result, "final_output", None) or getattr(result, "output_text", None) or result
     return out if isinstance(out, str) else json.dumps(out, ensure_ascii=False, indent=2)
 
+async def run_file_search_streaming(question: str, vector_store_ids: List[str], stream_callback=None):
+    """Run a file search with streaming support."""
+    agent = build_file_search_agent(vector_store_ids)
+    full_prompt = f"{FILE_SEARCH_INSTRUCTIONS}\n\nQuestion: {question}"
+    
+    if stream_callback:
+        # Send initial status
+        stream_callback("📁 Searching knowledge repository...")
+    
+    try:
+        result = await Runner.run(agent, full_prompt)
+        
+        if stream_callback:
+            stream_callback("📝 Processing results...")
+        
+        # Be flexible about result shape
+        out = getattr(result, "final_output", None) or getattr(result, "output_text", None) or result
+        final_result = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False, indent=2)
+        
+        if stream_callback:
+            # Stream the final result in chunks
+            chunk_size = 50
+            for i in range(0, len(final_result), chunk_size):
+                chunk = final_result[i:i + chunk_size]
+                stream_callback(chunk)
+                await asyncio.sleep(0.05)  # Small delay for streaming effect
+        
+        return final_result
+        
+    except Exception as e:
+        error_msg = f"❌ Error during file search: {str(e)}"
+        if stream_callback:
+            stream_callback(error_msg)
+        return error_msg
+
 async def file_search_repl(vector_store_ids: List[str]):
     """Interactive REPL for file search agent."""
     print("File Search Agent (UK) — type 'exit' to quit.")

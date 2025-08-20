@@ -28,9 +28,9 @@ except Exception as e:
     ) from e
 
 # Import the individual agents
-from web_search_agent import run_web_search
-from file_search_agent import run_file_search
-from ticket_agent import run_ticket_creation
+from web_search_agent import run_web_search, run_web_search_streaming
+from file_search_agent import run_file_search, run_file_search_streaming
+from ticket_agent import run_ticket_creation, run_ticket_creation_streaming
 
 # -----------------------------
 #            POLICY
@@ -143,6 +143,55 @@ async def llm_orchestrate_request(user_question: str, vector_store_ids: List[str
     
     except Exception as e:
         return f"❌ Error routing to {agent_type} agent: {str(e)}"
+
+async def llm_orchestrate_request_streaming(user_question: str, vector_store_ids: List[str] = None, ui_mode: bool = False, stream_callback=None) -> str:
+    """Orchestrate the request with streaming support."""
+    if vector_store_ids is None:
+        vector_store_ids = ["vs_689ca12932cc8191a0223ebc3a1d6116"]
+    
+    if stream_callback:
+        stream_callback("🤖 Analyzing your request...")
+    
+    # Use LLM to determine which agent to use
+    agent_type = await llm_route_request(user_question)
+    
+    try:
+        if agent_type == "TICKET":
+            if stream_callback:
+                stream_callback("🎫 Routing to Ticket Agent...")
+            result = await run_ticket_creation_streaming(user_question, stream_callback)
+            return f"🎫 Ticket Agent Response:\n{result}"
+        
+        elif agent_type == "FILE_SEARCH":
+            if stream_callback:
+                stream_callback("📁 Starting with File Search Agent...")
+            
+            # Try File Search first
+            file_result = await run_file_search_streaming(user_question, vector_store_ids, stream_callback)
+            
+            # Check if File Search found something useful
+            if "Not found in repository" in file_result or "not found" in file_result.lower():
+                if stream_callback:
+                    stream_callback("🌐 File Search returned no results, falling back to Web Search...")
+                
+                # Fallback to Web Search
+                web_result = await run_web_search_streaming(user_question, stream_callback)
+                return f"📁 File Search Agent Response:\n{file_result}\n\n🌐 Web Search Agent Response:\n{web_result}"
+            else:
+                # File Search found something useful
+                return f"📁 File Search Agent Response:\n{file_result}"
+        
+        else:
+            error_msg = "❌ Error: Unknown agent type"
+            if stream_callback:
+                stream_callback(error_msg)
+            return error_msg
+    
+    except Exception as e:
+        error_msg = f"❌ Error routing to {agent_type} agent: {str(e)}"
+        if stream_callback:
+            stream_callback(error_msg)
+        return error_msg
 
 async def llm_orchestrator_repl(vector_store_ids: List[str] = None):
     """Interactive REPL for the LLM orchestrator."""
