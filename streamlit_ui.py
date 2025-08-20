@@ -131,7 +131,7 @@ def initialize_session_state():
         st.session_state.messages = []
     
     if "vector_store_ids" not in st.session_state:
-        st.session_state.vector_store_ids = ["vs_689ca12932cc8191a0223ebc3a1d6116"]
+        st.session_state.vector_store_ids = ["vs_68a48bcd776c81918c6ef3db005e1c06"]
     
     # Add conversation context tracking
     if "conversation_context" not in st.session_state:
