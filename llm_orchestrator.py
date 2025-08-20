@@ -101,31 +101,35 @@ async def llm_route_request(user_question: str) -> str:
         # Default to file search for all other questions (will fallback to web search if needed)
         return "FILE_SEARCH"
 
-async def llm_orchestrate_request(user_question: str, vector_store_ids: List[str] = None) -> str:
+async def llm_orchestrate_request(user_question: str, vector_store_ids: List[str] = None, ui_mode: bool = False) -> str:
     """Orchestrate the request using LLM intelligence with File Search → Web Search fallback."""
     if vector_store_ids is None:
         vector_store_ids = ["vs_689ca12932cc8191a0223ebc3a1d6116"]
     
-    print(f"🤖 LLM Orchestrator: Analyzing request...")
+    if not ui_mode:
+        print(f"🤖 LLM Orchestrator: Analyzing request...")
     
     # Use LLM to determine which agent to use
     agent_type = await llm_route_request(user_question)
     
     try:
         if agent_type == "TICKET":
-            print(f"🤖 LLM Orchestrator: Routing to TICKET agent...")
+            if not ui_mode:
+                print(f"🤖 LLM Orchestrator: Routing to TICKET agent...")
             result = await run_ticket_creation(user_question)
             return f"🎫 Ticket Agent Response:\n{result}"
         
         elif agent_type == "FILE_SEARCH":
-            print(f"🤖 LLM Orchestrator: Starting with FILE_SEARCH agent...")
+            if not ui_mode:
+                print(f"🤖 LLM Orchestrator: Starting with FILE_SEARCH agent...")
             
             # Try File Search first
             file_result = await run_file_search(user_question, vector_store_ids)
             
             # Check if File Search found something useful
             if "Not found in repository" in file_result or "not found" in file_result.lower():
-                print(f"🤖 LLM Orchestrator: File Search returned no results, falling back to WEB_SEARCH...")
+                if not ui_mode:
+                    print(f"🤖 LLM Orchestrator: File Search returned no results, falling back to WEB_SEARCH...")
                 
                 # Fallback to Web Search
                 web_result = await run_web_search(user_question)
